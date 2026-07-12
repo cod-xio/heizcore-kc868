@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HeizCore</title>
+<style>
+/* ── Designsystem: Industrie-HMI ─────────────────────────────────
+   Anthrazit-Paneele, Messwerte in Tabular-Ziffern, Temperaturfarben
+   blau→orange→rot wie am Kesseldisplay. Light Mode = Schaltschrank-
+   grau. Signatur: das lebende Hydraulikschema. */
+:root{
+  --bg:#14181d;--panel:#1d232b;--panel2:#232b35;--line:#333e4c;
+  --tx:#dfe6ee;--tx2:#8b98a8;--acc:#31a8ff;
+  --cold:#3aa0ff;--warm:#ff9c2e;--hot:#ff4a3d;--ok:#3ecf6a;--off:#5a6675;
+  --warnc:#ffb300;--critc:#ff4a3d;
+  --r:10px;
+}
+[data-theme=light]{
+  --bg:#e2e6ea;--panel:#f4f6f8;--panel2:#ffffff;--line:#c6cdd5;
+  --tx:#1c242e;--tx2:#5b6877;--acc:#0072cf;--off:#9aa5b1;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font:15px/1.5 "Segoe UI",system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.num{font-family:"Consolas","Roboto Mono",monospace;font-variant-numeric:tabular-nums}
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:17px;font-weight:600;letter-spacing:.5px}
+header h1 b{color:var(--acc)}
+#hdr-out{margin-left:auto;font-size:15px;color:var(--tx2)}
+#hdr-out b{color:var(--tx);font-size:17px}
+#alarmdot{width:10px;height:10px;border-radius:50%;background:var(--ok)}
+#alarmdot.warn{background:var(--warnc);animation:blink 1s infinite}
+#alarmdot.crit{background:var(--critc);animation:blink .5s infinite}
+@keyframes blink{50%{opacity:.25}}
+button,select,input{font:inherit;color:var(--tx);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:6px 12px}
+button{cursor:pointer}
+button:hover{border-color:var(--acc)}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+main{flex:1;display:flex;overflow:hidden}
+nav{width:190px;background:var(--panel);border-right:1px solid var(--line);padding:10px 0;flex-shrink:0;overflow-y:auto}
+nav a{display:block;padding:10px 18px;color:var(--tx2);text-decoration:none;border-left:3px solid transparent;cursor:pointer;font-size:14px}
+nav a.act{color:var(--tx);border-left-color:var(--acc);background:var(--panel2)}
+#view{flex:1;overflow:auto;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;margin-bottom:14px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--tx2);margin-bottom:10px}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.kv{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--line);font-size:14px}
+.kv:last-child{border:0}
+.kv b{font-weight:600}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:6px 0}
+label.f{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--tx2)}
+label.f input,label.f select{min-width:110px}
+.badge{padding:2px 10px;border-radius:20px;font-size:12px;background:var(--panel2);border:1px solid var(--line)}
+.badge.on{color:var(--ok);border-color:var(--ok)}
+.badge.hot{color:var(--hot);border-color:var(--hot)}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--tx2);font-weight:600;font-size:12px;text-transform:uppercase}
+/* Schema */
+#schemaWrap{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:6px}
+svg text{font-family:"Consolas",monospace}
+.pipe{fill:none;stroke-width:5;stroke-linecap:round}
+.pipe.flowing{stroke-dasharray:9 7;animation:flow 1s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-16}}
+.pump{transform-origin:center;transform-box:fill-box}
+.pump.spin{animation:spin 1.4s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.flame{transform-origin:center;transform-box:fill-box;animation:flick .5s ease-in-out infinite alternate}
+@keyframes flick{to{transform:scale(1.12) translateY(-1px)}}
+/* Editor */
+#edWrap{display:flex;gap:12px;height:calc(100vh - 150px)}
+#palette{width:180px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:8px;overflow-y:auto;flex-shrink:0}
+#palette div{padding:7px 9px;margin:4px 0;background:var(--panel2);border:1px solid var(--line);border-radius:6px;cursor:grab;font-size:13px}
+#edCanvas{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);position:relative;overflow:hidden;
+  background-image:radial-gradient(var(--line) 1px,transparent 1px);background-size:24px 24px}
+.node{position:absolute;min-width:110px;background:var(--panel2);border:2px solid var(--line);border-radius:8px;padding:7px 9px;cursor:move;font-size:12.5px;text-align:center;user-select:none}
+.node.sel{border-color:var(--acc)}
+.node small{display:block;color:var(--tx2)}
+#edSvg{position:absolute;inset:0;pointer-events:none}
+.login{margin:auto;max-width:340px;width:100%}
+#loginView{display:flex;height:100vh}
+.tempval{font-size:26px;font-weight:700}
+.mut{color:var(--tx2);font-size:12.5px}
+canvas{width:100%;background:var(--panel2);border-radius:8px}
+.tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+.tabs button.act{background:var(--acc);border-color:var(--acc);color:#fff}
+.alarm{display:flex;gap:10px;align-items:center;padding:8px;border-radius:8px;border:1px solid var(--line);margin-bottom:6px}
+.alarm.w{border-color:var(--warnc)} .alarm.c{border-color:var(--critc)}
+@media(max-width:760px){nav{width:56px}nav a{padding:12px 8px;text-align:center;font-size:11px}#view{padding:8px}}
+</style>
+</head>
+<body data-theme="dark">
+
+<div id="loginView">
+  <div class="login card">
+    <h2 style="font-size:18px;text-transform:none;color:var(--tx)">Heiz<b style="color:var(--acc)">Core</b> – Anmeldung</h2>
+    <div class="row"><label class="f" style="flex:1">Benutzer<input id="lu" value="admin"></label></div>
+    <div class="row"><label class="f" style="flex:1">Passwort<input id="lp" type="password"></label></div>
+    <div class="row"><button class="pri" style="flex:1" onclick="doLogin()">Anmelden</button></div>
+    <div id="lerr" style="color:var(--critc);font-size:13px"></div>
+    <div class="mut">Werkszustand: admin / admin</div>
+  </div>
+</div>
+
+<div id="app" style="display:none;flex-direction:column;height:100vh">
+<header>
+  <h1>Heiz<b>Core</b></h1>
+  <span id="plantName" class="mut"></span>
+  <span id="hdr-out">Außen <b class="num" id="outT">–</b> °C</span>
+  <div id="alarmdot" title="Anlagenstatus"></div>
+  <select id="langSel" onchange="setLang(this.value)"><option value="de">DE</option><option value="en">EN</option></select>
+  <button onclick="toggleTheme()" id="themeBtn" title="Dark/Light">◐</button>
+  <button onclick="logout()" data-i18n="logout">Abmelden</button>
+</header>
+<main>
+  <nav id="nav"></nav>
+  <div id="view"></div>
+</main>
+</div>
+
+<script>
+/* ═══════════════ i18n ═══════════════ */
+const I18N={
+ de:{dash:"Anlage",editor:"Hydraulik-Editor",meas:"Messwerte",timep:"Zeitprogramme",settings:"Einstellungen",alarms:"Alarme",system:"System",logout:"Abmelden",
+     boiler:"Kessel",buffer:"Puffer",dhw:"Boiler",solar:"Solar",hc:"Heizkreis",outdoor:"Außen",
+     st:["Aus","Bereit","Zündung","Leistungsbrand","Teillast","Volllast","Gluterhaltung","STÖRUNG"],
+     modes:["Automatik","Tag","Nacht","Sommer","Urlaub","Frostschutz","Party","Aus"],
+     save:"Speichern",saved:"Gespeichert",flow:"Vorlauf",room:"Raum",charge:"Ladung",mixer:"Mischer",pump:"Pumpe",
+     yield:"Ertrag",today:"Heute",month:"Monat",year:"Jahr",runtime:"Betriebsstunden",starts:"Brennerstarts",consumption:"Verbrauch",
+     noalarm:"Keine aktiven Alarme",level:["Info","Warnung","Kritisch"]},
+ en:{dash:"Plant",editor:"Hydraulic editor",meas:"Measurements",timep:"Time programs",settings:"Settings",alarms:"Alarms",system:"System",logout:"Log out",
+     boiler:"Boiler",buffer:"Buffer",dhw:"DHW",solar:"Solar",hc:"Heating circuit",outdoor:"Outdoor",
+     st:["Off","Ready","Ignition","Firing","Part load","Full load","Ember hold","FAULT"],
+     modes:["Auto","Day","Night","Summer","Holiday","Frost","Party","Off"],
+     save:"Save",saved:"Saved",flow:"Flow",room:"Room",charge:"Charge",mixer:"Mixer",pump:"Pump",
+     yield:"Yield",today:"Today",month:"Month",year:"Year",runtime:"Runtime hours",starts:"Burner starts",consumption:"Consumption",
+     noalarm:"No active alarms",level:["Info","Warning","Critical"]}};
+let L=I18N.de, lang="de";
+function setLang(v){lang=v;L=I18N[v]||I18N.de;localStorage.hcLang=v;buildNav();route(cur);}
+function toggleTheme(){const b=document.body;b.dataset.theme=b.dataset.theme==="dark"?"light":"dark";localStorage.hcTheme=b.dataset.theme;}
+
+/* ═══════════════ Grundgerüst ═══════════════ */
+let S=null, cur="dash", role=3, ws=null, alarms=[];
+const $=q=>document.querySelector(q);
+const api=(u,opt)=>fetch(u,opt).then(r=>{if(r.status===401){showLogin();throw 0}return r.json()});
+const post=(u,b)=>api(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+const fmt=(v,d=1)=>(v===undefined||v===null||v===-999||Number.isNaN(v))?"–":(+v).toFixed(d);
+const tcol=t=>t===undefined||t===null||t<0?"var(--off)":t<30?"var(--cold)":t<50?"var(--warm)":"var(--hot)";
+
+function showLogin(){$("#loginView").style.display="flex";$("#app").style.display="none";}
+async function doLogin(){
+  try{
+    const r=await post("/api/login",{user:$("#lu").value,pass:$("#lp").value});
+    role=r.role; $("#loginView").style.display="none"; $("#app").style.display="flex";
+    if(r.mustChange){const p=prompt("Erststart: neues Admin-Passwort festlegen (min. 4 Zeichen):");
+      if(p&&p.length>=4)await post("/api/password",{pass:p});}
+    boot();
+  }catch(e){$("#lerr").textContent="Anmeldung fehlgeschlagen";}
+}
+async function logout(){await post("/api/logout",{});location.reload();}
+
+const NAVDEF=[["dash","dash"],["editor","editor"],["meas","meas"],["timep","timep"],["settings","settings"],["alarms","alarms"],["system","system"]];
+function buildNav(){
+  $("#nav").innerHTML=NAVDEF.map(([id,k])=>`<a data-v="${id}" class="${id===cur?'act':''}">${L[k]}</a>`).join("");
+  document.querySelectorAll("#nav a").forEach(a=>a.onclick=()=>route(a.dataset.v));
+}
+function route(v){cur=v;buildNav();({dash:vDash,editor:vEditor,meas:vMeas,timep:vTimep,settings:vSettings,alarms:vAlarms,system:vSystem}[v])();}
+
+async function boot(){
+  if(localStorage.hcTheme)document.body.dataset.theme=localStorage.hcTheme;
+  if(localStorage.hcLang)setLang(localStorage.hcLang); else buildNav();
+  const info=await api("/api/system/info");
+  $("#plantName").textContent=info.plant;
+  $("#langSel").value=info.lang||lang;
+  connectWS(); pollAlarms(); route("dash");
+}
+function connectWS(){
+  ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+  ws.onmessage=e=>{S=JSON.parse(e.data);onState();};
+  ws.onclose=()=>setTimeout(connectWS,3000);
+}
+async function pollAlarms(){
+  try{alarms=await api("/api/alarms");}catch(e){}
+  const d=$("#alarmdot");
+  d.className=alarms.some(a=>a.lvl===2)?"crit":alarms.some(a=>a.lvl===1)?"warn":"";
+  setTimeout(pollAlarms,5000);
+}
+function onState(){
+  if(!S)return;
+  $("#outT").textContent=fmt(S.out);
+  if(cur==="dash")updateSchema();
+}
+
+/* ═══════════════ Dashboard: lebendes Hydraulikschema ═══════════════
+   Aufbau (SVG 1000×560):
+   Solar (oben links) → Puffer (Mitte) ← Kessel (links)
+   Puffer → Boiler (rechts) und → Heizkreisverteiler → HK-Spalten     */
+function vDash(){
+  $("#view").innerHTML=`<div id="schemaWrap"></div><div class="grid g2" id="dashCards" style="margin-top:14px"></div>`;
+  updateSchema();
+}
+function pipe(x1,y1,x2,y2,col,flow,id){
+  const mid=(x1===x2||y1===y2)?"":` L ${x1} ${y2}`;
+  return `<path class="pipe ${flow?'flowing':''}" stroke="${col}" d="M ${x1} ${y1}${mid} L ${x2} ${y2}"/>`;
+}
+function pumpSym(x,y,on,label){
+  return `<g class="pump ${on?'spin':''}"><circle cx="${x}" cy="${y}" r="13" fill="var(--panel2)" stroke="${on?'var(--ok)':'var(--off)'}" stroke-width="2.5"/>
+  <path d="M ${x} ${y-9} L ${x+8} ${y+6} L ${x-8} ${y+6} Z" fill="${on?'var(--ok)':'var(--off)'}"/></g>
+  <text x="${x}" y="${y+30}" text-anchor="middle" font-size="11" fill="var(--tx2)">${label||""}</text>`;
+}
+function tempTag(x,y,t,anchor="middle"){
+  return `<g><rect x="${x-26}" y="${y-13}" width="52" height="22" rx="5" fill="var(--panel2)" stroke="${tcol(t)}"/>
+  <text x="${x}" y="${y+3}" text-anchor="middle" font-size="13" font-weight="bold" fill="${tcol(t)}">${fmt(t,0)}°</text></g>`;
+}
+function bufferGrad(id,ts){
+  const stops=ts.map((t,i)=>`<stop offset="${i*25}%" stop-color="${t===-999?'var(--off)':t>=55?'var(--hot)':t>=38?'var(--warm)':'var(--cold)'}"/>`).join("");
+  return `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">${stops}</linearGradient>`;
+}
+function updateSchema(){
+  if(!S||cur!=="dash")return;
+  const b=S.boiler,p=S.buf,w=S.dhw,so=S.sol,hcs=S.hc||[];
+  const burnerOn=b.st>=2&&b.st<=5;
+  const kesselPump=(S.relay||[]).some(r=>/kesselpumpe/i.test(r.n)&&r.s);
+  const hotFlow=v=>v>45?"var(--hot)":v>30?"var(--warm)":"var(--cold)";
+  const hcW=170, hcX0=560, hcY=60;
+  const hcSvg=hcs.slice(0,4).map((h,i)=>{
+    const x=hcX0+i*hcW*0.68;
+    return `
+      ${pipe(500,300,x+30,140,hotFlow(h.fa),h.pump)}
+      ${pumpSym(x+30,190,h.pump,"")}
+      <g>
+        <rect x="${x}" y="${hcY}" width="112" height="76" rx="8" fill="var(--panel2)" stroke="var(--line)"/>
+        <text x="${x+56}" y="${hcY+18}" text-anchor="middle" font-size="12" fill="var(--tx2)">${h.name}</text>
+        <text x="${x+56}" y="${hcY+40}" text-anchor="middle" font-size="17" font-weight="bold" fill="${tcol(h.fa)}">${fmt(h.fa,1)}°</text>
+        <text x="${x+56}" y="${hcY+60}" text-anchor="middle" font-size="11" fill="var(--tx2)">${L.modes[h.mode]}${h.type===1?" · M "+h.mix+"%":""}</text>
+      </g>`;
+  }).join("");
+
+  const svg=`
+  <svg viewBox="0 0 1000 560" style="width:100%;height:auto">
+    <defs>${bufferGrad("bg1",p.t)}</defs>
+
+    <!-- Kessel -->
+    ${pipe(215,330,330,330,hotFlow(b.t),burnerOn||kesselPump)}
+    ${pipe(330,430,215,430,"var(--cold)",burnerOn||kesselPump)}
+    ${pumpSym(272,380,kesselPump,L.pump)}
+    <g>
+      <rect x="90" y="270" width="125" height="200" rx="10" fill="var(--panel2)" stroke="${b.st===7?'var(--critc)':'var(--line)'}" stroke-width="${b.st===7?3:1.5}"/>
+      <rect x="108" y="290" width="89" height="120" rx="6" fill="var(--panel)" stroke="var(--line)"/>
+      ${burnerOn?`<g class="flame"><path d="M152 400 q-16 -22 0 -46 q4 14 12 18 q8 -12 4 -26 q22 22 8 50 q-10 14 -24 4z" fill="var(--warm)"/><path d="M152 396 q-8 -12 0 -24 q6 10 10 12 q4 12 -10 12z" fill="var(--hot)"/></g>`
+        :`<circle cx="152" cy="380" r="10" fill="var(--off)"/>`}
+      <text x="152" y="255" text-anchor="middle" font-size="13" fill="var(--tx2)">${L.boiler} · ${L.st[b.st]}</text>
+      <text x="152" y="445" text-anchor="middle" font-size="13" fill="var(--tx2)">${b.pw||0} %</text>
+      ${tempTag(152,290,b.t)}
+    </g>
+
+    <!-- Puffer -->
+    <g>
+      <rect x="330" y="200" width="170" height="280" rx="16" fill="url(#bg1)" stroke="var(--line)" stroke-width="2"/>
+      <text x="415" y="188" text-anchor="middle" font-size="13" fill="var(--tx2)">${L.buffer} · ${p.chg}% · ${fmt(p.kwh,1)} kWh</text>
+      ${[0,2,4].map((k,i)=>tempTag(415,232+i*100,p.t[k])).join("")}
+      <rect x="332" y="${478-2.74*p.chg}" width="6" height="${2.74*p.chg}" fill="var(--ok)" opacity=".85" rx="2"/>
+    </g>
+
+    <!-- Solar -->
+    ${so.en?`
+      ${pipe(300,110,360,200,hotFlow(so.tc),so.pump)}
+      ${pumpSym(330,158,so.pump,"")}
+      <g>
+        <rect x="150" y="55" width="150" height="66" rx="8" fill="var(--panel2)" stroke="var(--line)" transform="rotate(-8 225 88)"/>
+        <line x1="165" y1="70" x2="285" y2="70" stroke="${tcol(so.tc)}" transform="rotate(-8 225 88)"/>
+        <line x1="165" y1="86" x2="285" y2="86" stroke="${tcol(so.tc)}" transform="rotate(-8 225 88)"/>
+        <line x1="165" y1="102" x2="285" y2="102" stroke="${tcol(so.tc)}" transform="rotate(-8 225 88)"/>
+        <text x="225" y="45" text-anchor="middle" font-size="13" fill="var(--tx2)">${L.solar} ${fmt(so.tc,0)}° · ${fmt(so.yd,1)} kWh</text>
+      </g>`:""}
+
+    <!-- Boiler / WW -->
+    ${w.en?`
+      ${pipe(500,260,720,260,hotFlow(p.t[0]),w.chg)}
+      ${pumpSym(610,260,w.chg,L.pump)}
+      <g>
+        <rect x="720" y="200" width="120" height="180" rx="14" fill="var(--panel2)" stroke="var(--line)" stroke-width="2"/>
+        <path d="M745 350 q35 -18 0 -40 q35 -18 0 -40 q35 -18 0 -40" fill="none" stroke="${w.chg?'var(--hot)':'var(--off)'}" stroke-width="5" stroke-linecap="round"/>
+        <text x="780" y="188" text-anchor="middle" font-size="13" fill="var(--tx2)">${L.dhw}${w.legio?" · Legionellenschutz":""}</text>
+        ${tempTag(780,240,w.t)}
+        <text x="780" y="400" text-anchor="middle" font-size="12" fill="var(--tx2)">Soll ${fmt(w.set,0)}°</text>
+      </g>`:""}
+
+    <!-- Heizkreise -->
+    ${hcSvg}
+  </svg>`;
+  $("#schemaWrap").innerHTML=svg;
+
+  /* Karten unterhalb – KMS-D-Kachellogik */
+  $("#dashCards").innerHTML=`
+    <div class="card"><h2>${L.boiler}</h2>
+      <div class="kv"><span>Status</span><b>${L.st[b.st]}</b></div>
+      <div class="kv"><span>Temperatur</span><b class="num" style="color:${tcol(b.t)}">${fmt(b.t)} °C / ${fmt(b.set,0)} °C</b></div>
+      <div class="kv"><span>Rücklauf / Abgas</span><b class="num">${fmt(b.rt)} / ${fmt(b.fg,0)} °C</b></div>
+      <div class="kv"><span>${L.runtime}</span><b class="num">${b.rh} h · ${b.sn} ${L.starts}</b></div>
+      <div class="kv"><span>${L.consumption}</span><b class="num">${b.kg} kg</b></div>
+      ${b.st===7&&role<=1?`<button class="pri" onclick="post('/api/boiler/reset',{}).then(()=>0)">Störung quittieren</button>`:""}
+    </div>
+    ${hcs.map(h=>`<div class="card"><h2>${h.name}</h2>
+      <div class="kv"><span>${L.flow}</span><b class="num" style="color:${tcol(h.fa)}">${fmt(h.fa)} / ${fmt(h.fs)} °C</b></div>
+      <div class="kv"><span>${L.room}</span><b class="num">${fmt(h.ra)} °C</b></div>
+      <div class="row"><label class="f">Modus
+        <select onchange="post('/api/hc/${h.i+1}',{mode:+this.value})">
+          ${L.modes.map((m,i)=>`<option value="${i}" ${i===h.mode?"selected":""}>${m}</option>`).join("")}
+        </select></label>
+        <label class="f">Raumsoll Tag
+        <input class="num" type="number" step="0.5" min="5" max="30" value="${h.rday}"
+          onchange="post('/api/hc/${h.i+1}',{rday:+this.value})"></label>
+        <span class="badge ${h.pump?'on':''}">${L.pump}</span></div>
+    </div>`).join("")}
+    ${so.en?`<div class="card"><h2>${L.solar}</h2>
+      <div class="kv"><span>Kollektor / Speicher</span><b class="num">${fmt(so.tc)} / ${fmt(so.ts)} °C</b></div>
+      <div class="kv"><span>${L.yield} ${L.today}</span><b class="num">${fmt(so.yd,2)} kWh</b></div>
+      <div class="kv"><span>${L.month} / ${L.year}</span><b class="num">${fmt(so.ym,1)} / ${fmt(so.yy,0)} kWh</b></div></div>`:""}
+    <div class="card"><h2>Relais</h2>${(S.relay||[]).map(r=>`<span class="badge ${r.s?'on':''}" style="margin:3px">${r.n}</span>`).join("")}</div>`;
+}
+
+/* ═══════════════ Drag&Drop-Hydraulikeditor ═══════════════ */
+const PALETTE=[
+ ["boiler_pellet","Pelletkessel"],["boiler_log","Scheitholzkessel"],["boiler_chip","Hackschnitzelkessel"],
+ ["heatpump","Wärmepumpe"],["boiler_gas","Gaskessel"],["boiler_oil","Ölkessel"],["boiler_el","Elektroheizung"],
+ ["buffer","Pufferspeicher"],["buffer_strat","Schichtenspeicher"],["combi","Kombispeicher"],
+ ["dhw","Warmwasserboiler"],["fresh","Frischwasserstation"],
+ ["solar_flat","Flachkollektor"],["solar_tube","Röhrenkollektor"],
+ ["hc_mixed","Gemischter Heizkreis"],["hc_unmixed","Ungemischter Heizkreis"],
+ ["pump","Pumpe"],["mixer3","3-Wege-Mischer"],["mixer4","4-Wege-Mischer"],["valve","Umschaltventil"],
+ ["s_out","Außenfühler"],["s_room","Raumfühler"],["s_boiler","Kesselfühler"],["s_flow","Vorlauffühler"],
+ ["s_ret","Rücklauffühler"],["s_buf","Pufferfühler"],["s_dhw","Boilerfühler"],["s_coll","Kollektorfühler"],["s_flue","Abgasfühler"]];
+let ED={nodes:[],links:[]}, edSel=null, edLinkFrom=null, nid=1;
+
+async function vEditor(){
+  $("#view").innerHTML=`
+    <div class="row">
+      <button class="pri" onclick="edSave()">${L.save}</button>
+      <button onclick="edValidate(true)">Prüfen</button>
+      <button onclick="edDel()">Auswahl löschen</button>
+      <span class="mut">Komponente ziehen · Klick=wählen · zwei Knoten nacheinander mit ⇧-Klick verbinden</span>
+      <span id="edMsg" class="mut"></span>
+    </div>
+    <div id="edWrap">
+      <div id="palette">${PALETTE.map(([t,n])=>`<div draggable="true" data-t="${t}">${n}</div>`).join("")}</div>
+      <div id="edCanvas"><svg id="edSvg"></svg></div>
+    </div>`;
+  try{const r=await fetch("/api/schema");const j=await r.json();if(j&&j.nodes){ED=j;nid=Math.max(1,...ED.nodes.map(n=>n.id+1));}}catch(e){ED={nodes:[],links:[]}}
+  const cv=$("#edCanvas");
+  document.querySelectorAll("#palette div").forEach(p=>p.ondragstart=e=>e.dataTransfer.setData("t",p.dataset.t));
+  cv.ondragover=e=>e.preventDefault();
+  cv.ondrop=e=>{e.preventDefault();const t=e.dataTransfer.getData("t");const r=cv.getBoundingClientRect();
+    ED.nodes.push({id:nid++,t,x:Math.round((e.clientX-r.left-55)/24)*24,y:Math.round((e.clientY-r.top-20)/24)*24});edRender();};
+  edRender();
+}
+function edRender(){
+  const cv=$("#edCanvas");
+  cv.querySelectorAll(".node").forEach(n=>n.remove());
+  const nm=Object.fromEntries(PALETTE);
+  for(const n of ED.nodes){
+    const el=document.createElement("div");
+    el.className="node"+(edSel===n.id?" sel":"");
+    el.style.left=n.x+"px";el.style.top=n.y+"px";
+    el.innerHTML=`${nm[n.t]||n.t}<small>#${n.id}</small>`;
+    el.onmousedown=e=>{
+      if(e.shiftKey){ if(edLinkFrom===null){edLinkFrom=n.id;}else if(edLinkFrom!==n.id){ED.links.push([edLinkFrom,n.id]);edLinkFrom=null;} edRender();return;}
+      edSel=n.id;edRender();
+      const sx=e.clientX-n.x, sy=e.clientY-n.y;
+      const mv=ev=>{n.x=Math.round((ev.clientX-sx)/24)*24;n.y=Math.round((ev.clientY-sy)/24)*24;edRender();};
+      const up=()=>{removeEventListener("mousemove",mv);removeEventListener("mouseup",up);};
+      addEventListener("mousemove",mv);addEventListener("mouseup",up);
+    };
+    cv.appendChild(el);
+  }
+  const svg=$("#edSvg");
+  svg.setAttribute("width",cv.clientWidth);svg.setAttribute("height",cv.clientHeight);
+  svg.innerHTML=ED.links.map(([a,b])=>{
+    const na=ED.nodes.find(n=>n.id===a),nb=ED.nodes.find(n=>n.id===b);
+    if(!na||!nb)return"";
+    return `<path class="pipe" stroke="var(--acc)" stroke-width="3" fill="none"
+      d="M ${na.x+55} ${na.y+20} C ${na.x+55} ${(na.y+nb.y)/2+20}, ${nb.x+55} ${(na.y+nb.y)/2+20}, ${nb.x+55} ${nb.y+20}"/>`;
+  }).join("");
+}
+function edDel(){
+  if(edSel===null)return;
+  ED.nodes=ED.nodes.filter(n=>n.id!==edSel);
+  ED.links=ED.links.filter(([a,b])=>a!==edSel&&b!==edSel);
+  edSel=null;edRender();
+}
+function edValidate(show){
+  const has=t=>ED.nodes.some(n=>n.t.startsWith(t));
+  const linked=id=>ED.links.some(([a,b])=>a===id||b===id);
+  const errs=[];
+  if(ED.nodes.some(n=>n.t.startsWith("boiler")||n.t==="heatpump")&&!has("s_boiler"))errs.push("Kesselfühler fehlt");
+  if(has("hc_")&&!has("s_out"))errs.push("Außenfühler fehlt");
+  ED.nodes.filter(n=>n.t.startsWith("hc_mixed")).forEach(n=>{ if(!ED.nodes.some(m=>m.t.startsWith("mixer")))errs.push("Mischer für gemischten Heizkreis fehlt");});
+  if(has("dhw")&&!has("s_dhw"))errs.push("Boilerfühler fehlt");
+  if(has("solar")&&!has("s_coll"))errs.push("Kollektorfühler fehlt");
+  if(has("solar")&&!ED.nodes.some(n=>n.t==="pump"))errs.push("Solarpumpe fehlt");
+  ED.nodes.forEach(n=>{if(!linked(n.id)&&ED.nodes.length>1)errs.push(`#${n.id} ist nicht verbunden`);});
+  if(show)$("#edMsg").textContent=errs.length?("⚠ "+errs.join(" · ")):"✓ Schema plausibel";
+  return errs;
+}
+async function edSave(){
+  edValidate(true);
+  await post("/api/schema",ED);
+  $("#edMsg").textContent+=" · "+L.saved;
+}
+
+/* ═══════════════ Messwerte (Canvas-Diagramm) ═══════════════ */
+const SERIES=[["out","Außen","#3aa0ff"],["kes","Kessel","#ff4a3d"],["po","Puffer oben","#ff9c2e"],
+  ["pm","Puffer Mitte","#3ecf6a"],["pu","Puffer unten","#31a8ff"],["ww","Warmwasser","#e6d23c"],
+  ["kol","Kollektor","#ff6ec7"],["hk1","HK1 Vorlauf","#b58cff"],["hk2","HK2 Vorlauf","#7fd0d8"]];
+let measSel=new Set(["out","kes","po","pu","ww"]),measRange="24h";
+async function vMeas(){
+  $("#view").innerHTML=`
+    <div class="tabs">${["24h","7d","30d"].map(r=>`<button class="${r===measRange?'act':''}" onclick="measRange='${r}';vMeas()">${r}</button>`).join("")}
+      <button onclick="location='/api/log/export?fmt=csv'">CSV</button>
+      <button onclick="location='/api/log/export?fmt=json'">JSON</button></div>
+    <div class="card"><div class="row">${SERIES.map(([k,n,c])=>
+      `<label style="color:${c};font-size:13px"><input type="checkbox" ${measSel.has(k)?"checked":""}
+       onchange="this.checked?measSel.add('${k}'):measSel.delete('${k}');drawChart()"> ${n}</label>`).join("")}</div>
+      <canvas id="chart" height="360"></canvas></div>`;
+  window._logData=await api("/api/log?range="+measRange);
+  drawChart();
+}
+function drawChart(){
+  const c=$("#chart");if(!c)return;
+  const dpr=devicePixelRatio||1;
+  c.width=c.clientWidth*dpr;c.height=360*dpr;
+  const g=c.getContext("2d");g.scale(dpr,dpr);
+  const W=c.clientWidth,H=360,P=42;
+  const data=window._logData||[];
+  g.clearRect(0,0,W,H);
+  if(!data.length){g.fillStyle="#888";g.fillText("Noch keine Daten",P,H/2);return;}
+  let mn=1e9,mx=-1e9;
+  for(const d of data)for(const k of measSel){if(d[k]!==undefined){mn=Math.min(mn,d[k]);mx=Math.max(mx,d[k]);}}
+  if(mn>mx){mn=0;mx=1;} mn=Math.floor(mn/10)*10;mx=Math.ceil(mx/10)*10;if(mx===mn)mx=mn+10;
+  const t0=data[0].t,t1=data[data.length-1].t||t0+1;
+  const X=t=>P+(W-P-10)*(t-t0)/(t1-t0), Y=v=>H-24-(H-40)*(v-mn)/(mx-mn);
+  g.strokeStyle="rgba(128,140,155,.25)";g.fillStyle="#8b98a8";g.font="11px Consolas";
+  for(let v=mn;v<=mx;v+=10){g.beginPath();g.moveTo(P,Y(v));g.lineTo(W-10,Y(v));g.stroke();g.fillText(v+"°",6,Y(v)+4);}
+  const steps=6;
+  for(let i=0;i<=steps;i++){const t=t0+(t1-t0)*i/steps,d=new Date(t*1000);
+    g.fillText(measRange==="24h"?d.getHours()+":00":(d.getDate()+"."+(d.getMonth()+1)+"."),X(t)-14,H-6);}
+  for(const[k,,col]of SERIES){
+    if(!measSel.has(k))continue;
+    g.strokeStyle=col;g.lineWidth=1.6;g.beginPath();let started=false;
+    for(const d of data){if(d[k]===undefined)continue;
+      started?g.lineTo(X(d.t),Y(d[k])):g.moveTo(X(d.t),Y(d[k]));started=true;}
+    g.stroke();
+  }
+}
+
+/* ═══════════════ Zeitprogramme ═══════════════ */
+let CFG=null;
+async function loadCfg(){CFG=await api("/api/config");return CFG;}
+async function saveCfg(part){await post("/api/config",part||CFG);toast(L.saved);}
+function toast(m){const t=document.createElement("div");t.textContent=m;
+  t.style.cssText="position:fixed;bottom:20px;right:20px;background:var(--acc);color:#fff;padding:8px 18px;border-radius:8px;z-index:9";
+  document.body.appendChild(t);setTimeout(()=>t.remove(),1800);}
+const DAYS=["Mo","Di","Mi","Do","Fr","Sa","So"];
+const m2t=m=>String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");
+const t2m=s=>{const[a,b]=s.split(":");return(+a)*60+(+b);};
+
+async function vTimep(){
+  await loadCfg();
+  const tps=CFG.tp||[];
+  $("#view").innerHTML=`<div class="row"><button class="pri" onclick="tpAdd()">+ Programm</button></div><div id="tpList"></div>`;
+  $("#tpList").innerHTML=tps.map((t,ti)=>`
+    <div class="card"><h2><input value="${t.name}" onchange="CFG.tp[${ti}].name=this.value" style="width:200px">
+      <label style="margin-left:12px"><input type="checkbox" ${t.en?"checked":""} onchange="CFG.tp[${ti}].en=this.checked"> aktiv</label></h2>
+      <table><tr><th>Tage</th><th>Ein</th><th>Aus</th><th></th></tr>
+      ${(t.sw||[]).map((s,si)=>`<tr>
+        <td>${DAYS.map((d,di)=>`<label style="margin-right:4px;font-size:12px"><input type="checkbox" ${(s.d>>di)&1?"checked":""}
+          onchange="CFG.tp[${ti}].sw[${si}].d^=(1<<${di})">${d}</label>`).join("")}</td>
+        <td><input type="time" value="${m2t(s.on)}" onchange="CFG.tp[${ti}].sw[${si}].on=t2m(this.value)"></td>
+        <td><input type="time" value="${m2t(s.off)}" onchange="CFG.tp[${ti}].sw[${si}].off=t2m(this.value)"></td>
+        <td><button onclick="CFG.tp[${ti}].sw.splice(${si},1);vTimepRe()">✕</button></td></tr>`).join("")}
+      </table>
+      <div class="row"><button onclick="(CFG.tp[${ti}].sw=CFG.tp[${ti}].sw||[]).push({d:127,on:360,off:1320});vTimepRe()">+ Schaltzeit</button>
+      <button class="pri" onclick="saveCfg()">${L.save}</button></div>
+    </div>`).join("");
+}
+function vTimepRe(){const html=$("#tpList");vTimep();}
+function tpAdd(){
+  CFG.tp=CFG.tp||[];
+  const used=CFG.tp.map(t=>t.i);
+  let i=0;while(used.includes(i))i++;
+  CFG.tp.push({i,name:"Programm "+(i+1),en:true,sw:[{d:127,on:360,off:1320}]});
+  vTimepRe();
+}
+
+/* ═══════════════ Einstellungen ═══════════════ */
+let setTab="boiler";
+const BOILER_TYPES=["Pelletkessel","Scheitholzkessel","Hackschnitzelkessel","Wärmepumpe","Gaskessel","Ölkessel","Elektroheizung","Hybridanlage"];
+const ROLES_S=["–","Außen","Raum","Kessel","Vorlauf","Rücklauf","Puffer oben","Puffer mitte-oben","Puffer Mitte","Puffer mitte-unten","Puffer unten","Boiler (WW)","Kollektor","Abgas"];
+const SRC_S=["–","DS18B20","NTC (Analogeingang)","Modbus","MQTT","Festwert"];
+const ACT_S=["–","Brenner","Kesselpumpe","HK-Pumpe","Mischer auf","Mischer zu","Boilerpumpe","Solarpumpe","Ventil","Alarmausgang"];
+
+async function vSettings(){
+  await loadCfg();
+  const tabs=[["boiler","Kessel"],["hc","Heizkreise"],["dhw","Warmwasser"],["solar","Solar / Puffer"],["sens","Fühler"],["relay","Relais"],["net","Netzwerk & Dienste"],["users","Benutzer"]];
+  $("#view").innerHTML=`<div class="tabs">${tabs.map(([k,n])=>`<button class="${k===setTab?'act':''}" onclick="setTab='${k}';vSettings()">${n}</button>`).join("")}</div><div id="setBody"></div>`;
+  const B=$("#setBody"),c=CFG;
+  const num=(path,v,step=0.5)=>`<input class="num" type="number" step="${step}" value="${v}" onchange="setPath('${path}',+this.value)">`;
+  window.setPath=(p,v)=>{let o=CFG;const parts=p.split(".");for(let i=0;i<parts.length-1;i++)o=o[parts[i]];o[parts.at(-1)]=v;};
+
+  if(setTab==="boiler")B.innerHTML=`<div class="card"><h2>Kessel</h2>
+    <div class="row"><label class="f">Typ<select onchange="setPath('boiler.type',+this.value)">
+      ${BOILER_TYPES.map((n,i)=>`<option value="${i}" ${i===c.boiler.type?"selected":""}>${n}</option>`).join("")}</select></label>
+    <label class="f">Name<input value="${c.boiler.name}" onchange="setPath('boiler.name',this.value)"></label>
+    <label class="f">Aktiv<select onchange="setPath('boiler.en',this.value==='1')"><option value="1" ${c.boiler.en?"selected":""}>Ja</option><option value="0" ${!c.boiler.en?"selected":""}>Nein</option></select></label></div>
+    <div class="row">
+    <label class="f">Solltemperatur °C${num("boiler.set",c.boiler.set)}</label>
+    <label class="f">Hysterese K${num("boiler.hyst",c.boiler.hyst)}</label>
+    <label class="f">Minimaltemp. °C${num("boiler.tmin",c.boiler.tmin)}</label>
+    <label class="f">Maximaltemp. °C${num("boiler.tmax",c.boiler.tmax)}</label>
+    <label class="f">Rücklaufanhebung °C${num("boiler.rmin",c.boiler.rmin)}</label>
+    <label class="f">Verbrauch Volllast kg/h${num("boiler.kgph",c.boiler.kgph,0.1)}</label></div>
+    <button class="pri" onclick="saveCfg()">${L.save}</button></div>`;
+
+  if(setTab==="hc"){
+    B.innerHTML=(c.hc||[]).map((h,idx)=>`<div class="card"><h2>${h.name}
+      <label style="margin-left:10px;font-size:12px"><input type="checkbox" ${h.en?"checked":""} onchange="CFG.hc[${idx}].en=this.checked"> aktiv</label></h2>
+      <div class="row">
+      <label class="f">Name<input value="${h.name}" onchange="CFG.hc[${idx}].name=this.value"></label>
+      <label class="f">Typ<select onchange="CFG.hc[${idx}].type=+this.value">
+        <option value="0" ${h.type===0?"selected":""}>ungemischt</option><option value="1" ${h.type===1?"selected":""}>gemischt</option></select></label>
+      <label class="f">Steigung<input class="num" type="number" step="0.05" min="0.2" max="3.5" value="${h.slope}" onchange="CFG.hc[${idx}].slope=+this.value"></label>
+      <label class="f">Niveau K<input class="num" type="number" step="0.5" value="${h.offs}" onchange="CFG.hc[${idx}].offs=+this.value"></label>
+      <label class="f">VL min °C<input class="num" type="number" value="${h.fmin}" onchange="CFG.hc[${idx}].fmin=+this.value"></label>
+      <label class="f">VL max °C<input class="num" type="number" value="${h.fmax}" onchange="CFG.hc[${idx}].fmax=+this.value"></label></div>
+      <div class="row">
+      <label class="f">Raumsoll Tag<input class="num" type="number" step="0.5" value="${h.rday}" onchange="CFG.hc[${idx}].rday=+this.value"></label>
+      <label class="f">Raumsoll Nacht<input class="num" type="number" step="0.5" value="${h.rnight}" onchange="CFG.hc[${idx}].rnight=+this.value"></label>
+      <label class="f">Heizgrenze °C<input class="num" type="number" value="${h.hlim}" onchange="CFG.hc[${idx}].hlim=+this.value"></label>
+      <label class="f">Frostschutz °C<input class="num" type="number" value="${h.frost}" onchange="CFG.hc[${idx}].frost=+this.value"></label>
+      <label class="f">Raumeinfluss K/K<input class="num" type="number" step="0.5" value="${h.rinf}" onchange="CFG.hc[${idx}].rinf=+this.value"></label>
+      <label class="f">Mischer-Stellzeit s<input class="num" type="number" value="${h.mrt}" onchange="CFG.hc[${idx}].mrt=+this.value"></label>
+      <label class="f">Zeitprogramm<select onchange="CFG.hc[${idx}].tp=+this.value">
+        <option value="-1">–</option>${(c.tp||[]).map(t=>`<option value="${t.i}" ${t.i===h.tp?"selected":""}>${t.name}</option>`).join("")}</select></label></div>
+      </div>`).join("")+
+      `<div class="row"><button onclick="hcAdd()">+ Heizkreis</button><button class="pri" onclick="saveCfg()">${L.save}</button></div>`;
+  }
+  if(setTab==="dhw")B.innerHTML=`<div class="card"><h2>Warmwasser</h2>
+    <div class="row">
+    <label class="f">Aktiv<select onchange="setPath('dhw.en',this.value==='1')"><option value="1" ${c.dhw.en?"selected":""}>Ja</option><option value="0" ${!c.dhw.en?"selected":""}>Nein</option></select></label>
+    <label class="f">Solltemp. °C${num("dhw.set",c.dhw.set)}</label>
+    <label class="f">Hysterese K${num("dhw.hyst",c.dhw.hyst)}</label>
+    <label class="f">WW-Vorrang<select onchange="setPath('dhw.prio',this.value==='1')"><option value="1" ${c.dhw.prio?"selected":""}>Ja</option><option value="0" ${!c.dhw.prio?"selected":""}>Nein</option></select></label>
+    <label class="f">Zeitprogramm<select onchange="setPath('dhw.tp',+this.value)"><option value="-1">–</option>${(c.tp||[]).map(t=>`<option value="${t.i}" ${t.i===c.dhw.tp?"selected":""}>${t.name}</option>`).join("")}</select></label></div>
+    <h2 style="margin-top:12px">Legionellenschutz</h2>
+    <div class="row">
+    <label class="f">Aktiv<select onchange="setPath('dhw.legio',this.value==='1')"><option value="1" ${c.dhw.legio?"selected":""}>Ja</option><option value="0" ${!c.dhw.legio?"selected":""}>Nein</option></select></label>
+    <label class="f">Wochentag<select onchange="setPath('dhw.lwd',+this.value)">${DAYS.map((d,i)=>`<option value="${i}" ${i===c.dhw.lwd?"selected":""}>${d}</option>`).join("")}</select></label>
+    <label class="f">Uhrzeit h${num("dhw.lh",c.dhw.lh,1)}</label>
+    <label class="f">Temperatur °C${num("dhw.lt",c.dhw.lt)}</label></div>
+    <button class="pri" onclick="saveCfg()">${L.save}</button></div>`;
+
+  if(setTab==="solar")B.innerHTML=`<div class="card"><h2>Solarthermie</h2>
+    <div class="row">
+    <label class="f">Aktiv<select onchange="setPath('solar.en',this.value==='1')"><option value="1" ${c.solar.en?"selected":""}>Ja</option><option value="0" ${!c.solar.en?"selected":""}>Nein</option></select></label>
+    <label class="f">ΔT Ein K${num("solar.dton",c.solar.dton)}</label>
+    <label class="f">ΔT Aus K${num("solar.dtoff",c.solar.dtoff)}</label>
+    <label class="f">Speicher max °C${num("solar.smax",c.solar.smax)}</label>
+    <label class="f">Kollektor max °C${num("solar.cmax",c.solar.cmax)}</label>
+    <label class="f">Durchfluss l/min${num("solar.lpm",c.solar.lpm,0.5)}</label></div></div>
+    <div class="card"><h2>Pufferspeicher</h2>
+    <div class="row">
+    <label class="f">Aktiv<select onchange="setPath('buffer.en',this.value==='1')"><option value="1" ${c.buffer.en?"selected":""}>Ja</option><option value="0" ${!c.buffer.en?"selected":""}>Nein</option></select></label>
+    <label class="f">Volumen l${num("buffer.vol",c.buffer.vol,50)}</label>
+    <label class="f">T min °C${num("buffer.tmin",c.buffer.tmin)}</label>
+    <label class="f">T max °C${num("buffer.tmax",c.buffer.tmax)}</label></div>
+    <button class="pri" onclick="saveCfg()">${L.save}</button></div>`;
+
+  if(setTab==="sens"){
+    const sd=await api("/api/sensors");
+    B.innerHTML=`<div class="card"><h2>Gefundene DS18B20 <button onclick="post('/api/sensors/rescan',{}).then(()=>vSettings())">Neu suchen</button></h2>
+      <table><tr><th>ROM</th><th>Bus</th><th>Temperatur</th></tr>
+      ${sd.ds18b20.map(d=>`<tr><td class="num">${d.rom}</td><td>${d.bus+1}</td><td class="num">${fmt(d.t)} °C</td></tr>`).join("")}</table>
+      <table style="margin-top:8px"><tr><th>NTC-Eingang</th><th>Temperatur</th></tr>
+      ${sd.ntc.map(d=>`<tr><td>AIN${d.ain+1}</td><td class="num">${fmt(d.t)} °C</td></tr>`).join("")}</table></div>
+      <div class="card"><h2>Fühlerzuordnung</h2>
+      <table><tr><th>Name</th><th>Quelle</th><th>Referenz</th><th>Rolle</th><th>Nr.</th><th>Offset K</th><th>Ist</th></tr>
+      ${(sd.sensors||[]).map(s=>`<tr>
+        <td><input style="width:130px" value="${s.name}" onchange="sensSet(${s.i},'name',this.value)"></td>
+        <td><select onchange="sensSet(${s.i},'src',+this.value)">${SRC_S.map((n,i)=>`<option value="${i}" ${i===s.src?"selected":""}>${n}</option>`).join("")}</select></td>
+        <td><input class="num" style="width:140px" value="${s.ref}" onchange="sensSet(${s.i},'ref',this.value)" title="DS18B20: ROM-Code · NTC: 0-3 · Modbus: slave:reg"></td>
+        <td><select onchange="sensSet(${s.i},'role',+this.value)">${ROLES_S.map((n,i)=>`<option value="${i}" ${i===s.role?"selected":""}>${n}</option>`).join("")}</select></td>
+        <td><input class="num" style="width:52px" type="number" value="${s.ridx}" onchange="sensSet(${s.i},'ridx',+this.value)"></td>
+        <td><input class="num" style="width:60px" type="number" step="0.1" value="${s.off}" onchange="sensSet(${s.i},'off',+this.value)"></td>
+        <td class="num">${fmt(s.t)}</td></tr>`).join("")}</table>
+      <div class="row"><button class="pri" onclick="sensSave()">${L.save}</button>
+      <span class="mut">Nr. = Heizkreis-Index bei Rolle Vorlauf/Raum (0 = HK1). Änderungen werden erst mit „Speichern" wirksam.</span></div></div>`;
+    window._sensDirty={};
+    window.sensSet=(i,k,v)=>{(_sensDirty[i]=_sensDirty[i]||{i})[k]=v;};
+    window.sensSave=async()=>{
+      const sensors=Object.values(_sensDirty).map(s=>{
+        if(s.ref!==undefined&&typeof s.ref==="string"&&s.ref.includes(":")){
+          const[sid,reg]=s.ref.split(":");s.ref=((+sid)<<16|(+reg)).toString(16).padStart(16,"0");}
+        return s;});
+      if(sensors.length)await post("/api/config",{sensors:sensors.map(s=>({en:true,...s}))});
+      toast(L.saved);vSettings();
+    };
+  }
+
+  if(setTab==="relay")B.innerHTML=`<div class="card"><h2>Relaiszuordnung</h2>
+    <table><tr><th>Relais</th><th>Name</th><th>Funktion</th><th>Nr.</th><th>Laufzeit h</th><th>Starts</th></tr>
+    ${(c.relays||[]).map((r,i)=>`<tr><td>R${i+1}</td>
+      <td><input value="${r.name}" onchange="CFG.relays[${i}].name=this.value"></td>
+      <td><select onchange="CFG.relays[${i}].fn=+this.value">${ACT_S.map((n,fi)=>`<option value="${fi}" ${fi===r.fn?"selected":""}>${n}</option>`).join("")}</select></td>
+      <td><input class="num" style="width:56px" type="number" value="${r.fi}" onchange="CFG.relays[${i}].fi=+this.value"></td>
+      <td class="num">${Math.round((r.rt||0)/3600)}</td><td class="num">${r.st||0}</td></tr>`).join("")}</table>
+    <div class="row"><button class="pri" onclick="saveCfg()">${L.save}</button>
+    <span class="mut">Nr. = Heizkreis-Index bei HK-Pumpe/Mischer (0 = HK1)</span></div></div>`;
+
+  if(setTab==="net"){const n=c.net;B.innerHTML=`
+    <div class="card"><h2>Netzwerk</h2><div class="row">
+      <label class="f">Hostname<input value="${n.host}" onchange="setPath('net.host',this.value)"></label>
+      <label class="f">WLAN SSID<input value="${n.ssid}" onchange="setPath('net.ssid',this.value)"></label>
+      <label class="f">WLAN Passwort<input type="password" value="${n.wpass}" onchange="setPath('net.wpass',this.value)"></label>
+      <label class="f">Ethernet<select onchange="setPath('net.eth',this.value==='1')"><option value="1" ${n.eth?"selected":""}>Ein</option><option value="0" ${!n.eth?"selected":""}>Aus</option></select></label>
+      <label class="f">NTP<input value="${n.ntp}" onchange="setPath('net.ntp',this.value)"></label>
+      <label class="f">Zeitzone (TZ)<input value="${n.tz}" onchange="setPath('net.tz',this.value)"></label></div></div>
+    <div class="card"><h2>MQTT</h2><div class="row">
+      <label class="f">Aktiv<select onchange="setPath('net.mqtt',this.value==='1')"><option value="1" ${n.mqtt?"selected":""}>Ein</option><option value="0" ${!n.mqtt?"selected":""}>Aus</option></select></label>
+      <label class="f">Broker-URI<input style="width:230px" placeholder="mqtt://192.168.1.10:1883" value="${n.muri}" onchange="setPath('net.muri',this.value)"></label>
+      <label class="f">Benutzer<input value="${n.muser}" onchange="setPath('net.muser',this.value)"></label>
+      <label class="f">Passwort<input type="password" value="${n.mpass}" onchange="setPath('net.mpass',this.value)"></label>
+      <label class="f">Topic-Präfix<input value="${n.mpre}" onchange="setPath('net.mpre',this.value)"></label>
+      <label class="f">HA Discovery<select onchange="setPath('net.disc',this.value==='1')"><option value="1" ${n.disc?"selected":""}>Ein</option><option value="0" ${!n.disc?"selected":""}>Aus</option></select></label></div></div>
+    <div class="card"><h2>Modbus</h2><div class="row">
+      <label class="f">RTU (RS485)<select onchange="setPath('net.mbr',this.value==='1')"><option value="1" ${n.mbr?"selected":""}>Ein</option><option value="0" ${!n.mbr?"selected":""}>Aus</option></select></label>
+      <label class="f">RTU-Modus<select onchange="setPath('net.mbrm',+this.value)"><option value="0" ${n.mbrm===0?"selected":""}>Master</option><option value="1" ${n.mbrm===1?"selected":""}>Slave</option></select></label>
+      <label class="f">Baudrate<select onchange="setPath('net.mbrb',+this.value)">${[9600,19200,38400,57600,115200].map(b=>`<option ${b===n.mbrb?"selected":""}>${b}</option>`).join("")}</select></label>
+      <label class="f">TCP<select onchange="setPath('net.mbt',this.value==='1')"><option value="1" ${n.mbt?"selected":""}>Ein</option><option value="0" ${!n.mbt?"selected":""}>Aus</option></select></label>
+      <label class="f">TCP-Modus<select onchange="setPath('net.mbtm',+this.value)"><option value="0" ${n.mbtm===0?"selected":""}>Master</option><option value="1" ${n.mbtm===1?"selected":""}>Slave</option></select></label>
+      <label class="f">Port${`<input class="num" type="number" value="${n.mbtp}" onchange="setPath('net.mbtp',+this.value)">`}</label>
+      <label class="f">Slave-ID${`<input class="num" type="number" value="${n.mbsid}" onchange="setPath('net.mbsid',+this.value)">`}</label></div>
+      <div class="mut">Änderungen an Modbus/Netzwerk werden nach einem Neustart wirksam (System → Neustart).</div></div>
+    <div class="card"><h2>Benachrichtigung</h2><div class="row">
+      <label class="f">Telegram<select onchange="setPath('net.tg',this.value==='1')"><option value="1" ${n.tg?"selected":""}>Ein</option><option value="0" ${!n.tg?"selected":""}>Aus</option></select></label>
+      <label class="f">Bot-Token<input style="width:250px" value="${n.tgtok}" onchange="setPath('net.tgtok',this.value)"></label>
+      <label class="f">Chat-ID<input value="${n.tgchat}" onchange="setPath('net.tgchat',this.value)"></label></div>
+      <div class="row">
+      <label class="f">E-Mail<select onchange="setPath('net.em',this.value==='1')"><option value="1" ${n.em?"selected":""}>Ein</option><option value="0" ${!n.em?"selected":""}>Aus</option></select></label>
+      <label class="f">SMTP-Server<input value="${n.esmtp}" onchange="setPath('net.esmtp',this.value)"></label>
+      <label class="f">Port<input class="num" type="number" value="${n.eport}" onchange="setPath('net.eport',+this.value)"></label>
+      <label class="f">Benutzer<input value="${n.euser}" onchange="setPath('net.euser',this.value)"></label>
+      <label class="f">Passwort<input type="password" value="${n.epass}" onchange="setPath('net.epass',this.value)"></label>
+      <label class="f">Empfänger<input value="${n.eto}" onchange="setPath('net.eto',this.value)"></label></div></div>
+    <button class="pri" onclick="saveCfg()">${L.save}</button>`;}
+
+  if(setTab==="users")B.innerHTML=`<div class="card"><h2>Benutzer & Rollen</h2>
+    <table><tr><th>Name</th><th>Rolle</th></tr>
+    ${(c.users||[]).map(u=>`<tr><td>${u.name}</td><td>${["Administrator","Servicetechniker","Benutzer","Gast"][u.role]}</td></tr>`).join("")}</table>
+    <div class="row" style="margin-top:10px">
+      <label class="f">Eigenes Passwort ändern<input id="npw" type="password"></label>
+      <button class="pri" onclick="post('/api/password',{pass:$('#npw').value}).then(()=>toast(L.saved))">Ändern</button></div>
+    <div class="mut">Weitere Benutzer werden über den Konfigurations-Import angelegt (System → Backup).</div></div>`;
+}
+function hcAdd(){
+  const used=(CFG.hc||[]).map(h=>h.i);
+  let i=0;while(used.includes(i)&&i<20)i++;
+  if(i>=20)return toast("Maximal 20 Heizkreise");
+  CFG.hc.push({i,en:true,name:"Heizkreis "+(i+1),type:1,mode:0,slope:1.2,offs:0,fmin:20,fmax:60,rday:21,rnight:17,hlim:17,frost:3,rinf:0,tp:1,mrt:120,npts:0});
+  vSettings();
+}
+
+/* ═══════════════ Alarme ═══════════════ */
+async function vAlarms(){
+  const a=await api("/api/alarms");
+  $("#view").innerHTML=`<div class="card"><h2>Aktive Alarme</h2>
+    ${a.length?a.map(x=>`<div class="alarm ${x.lvl===2?'c':x.lvl===1?'w':''}">
+      <b style="color:${x.lvl===2?'var(--critc)':x.lvl===1?'var(--warnc)':'var(--acc)'}">${L.level[x.lvl]}</b>
+      <span>${x.msg}</span><span class="mut num" style="margin-left:auto">${new Date(x.t*1000).toLocaleString()}</span></div>`).join("")
+    :`<div class="mut">${L.noalarm}</div>`}</div>
+    <div class="card"><h2>Historie</h2><pre id="ahist" class="num" style="font-size:12px;max-height:340px;overflow:auto;color:var(--tx2)"></pre></div>`;
+  const h=await fetch("/api/alarms/history").then(r=>r.text());
+  $("#ahist").textContent=h.split("\n").filter(Boolean).slice(-200).reverse().map(l=>{
+    try{const j=JSON.parse(l);return`${new Date(j.t*1000).toLocaleString()}  ${L.level[j.lvl]}  ${j.msg}${j.clr?" (behoben)":""}`;}catch(e){return"";}}).join("\n");
+}
+
+/* ═══════════════ System ═══════════════ */
+async function vSystem(){
+  const i=await api("/api/system/info");
+  $("#view").innerHTML=`
+    <div class="grid g2">
+    <div class="card"><h2>System</h2>
+      <div class="kv"><span>Firmware</span><b>HeizCore ${i.fw}</b></div>
+      <div class="kv"><span>Board</span><b>KinCony KC868-A${i.board}</b></div>
+      <div class="kv"><span>IP-Adresse</span><b class="num">${i.ip}</b></div>
+      <div class="kv"><span>Freier Heap</span><b class="num">${Math.round(i.heap/1024)} kB</b></div>
+      <div class="kv"><span>Laufzeit</span><b class="num">${Math.floor(i.uptime/3600)} h ${Math.floor(i.uptime/60)%60} min</b></div>
+      <div class="row"><button onclick="if(confirm('Neustart?'))post('/api/system/reboot',{})">Neustart</button>
+      <button onclick="if(confirm('Wirklich alle Einstellungen löschen?'))post('/api/system/factory',{})" style="border-color:var(--critc);color:var(--critc)">Werkszustand</button></div></div>
+    <div class="card"><h2>Backup</h2>
+      <div class="row"><button class="pri" onclick="location='/api/backup'">Konfiguration exportieren</button></div>
+      <div class="row"><input type="file" id="bakFile" accept=".json">
+      <button onclick="bakImport()">Importieren</button></div>
+      <div class="mut">Enthält Einstellungen, Benutzer, Zeitprogramme, Zählerstände und Hydraulikschema-Verweise.</div></div>
+    <div class="card"><h2>OTA-Update</h2>
+      <div class="row"><input type="file" id="otaFile" accept=".bin"><button class="pri" onclick="otaUpload()">Firmware hochladen</button></div>
+      <div class="row"><input id="otaUrl" style="flex:1" placeholder="https://server/heizcore.bin"><button onclick="post('/api/ota/url',{url:$('#otaUrl').value})">Von URL</button></div>
+      <div id="otaMsg" class="mut"></div></div>
+    </div>`;
+}
+async function bakImport(){
+  const f=$("#bakFile").files[0];if(!f)return;
+  const txt=await f.text();
+  await fetch("/api/backup",{method:"POST",body:txt});
+  toast("Backup importiert – Neustart empfohlen");
+}
+async function otaUpload(){
+  const f=$("#otaFile").files[0];if(!f)return;
+  $("#otaMsg").textContent="Upload läuft … Gerät startet danach neu.";
+  await fetch("/api/ota",{method:"POST",body:f});
+}
+
+/* ═══════════════ Start ═══════════════ */
+if(localStorage.hcTheme)document.body.dataset.theme=localStorage.hcTheme;
+$("#lp").addEventListener("keydown",e=>e.key==="Enter"&&doLogin());
+/* Session evtl. noch gültig? */
+fetch("/api/config").then(r=>{if(r.ok){role=1;$("#loginView").style.display="none";$("#app").style.display="flex";boot();}});
+</script>
+</body>
+</html>

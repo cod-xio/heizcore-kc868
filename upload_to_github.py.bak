@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""
+upload_to_github.py — HeizCore (KC868-A6/A8, ESP-IDF) → GitHub
+Token NUR als Env-Var:  export GITHUB_TOKEN=github_pat_...
+Dateiliste wird automatisch aus dem Projektordner ermittelt.
+"""
+import os, sys, json, base64, time, socket
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error   import HTTPError, URLError
+
+GITHUB_TOKEN  = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_USER   = os.environ.get("GITHUB_USER", "cod-xio")
+REPO_NAME     = "heizcore-kc868"
+REPO_PRIVATE  = False
+
+COMMIT_MSG    = ("v1.0.0 — ESP-IDF Heizungsregler: Kessel-FSM, 20 HK, Puffer, WW+Legio, "
+                 "Solar, Web-UI mit Live-Hydraulikschema, MQTT+HA-Discovery, Modbus RTU/TCP, "
+                 "OTA+Rollback, Datenlogger, CI-Build")
+PROJECT_DIR   = Path(__file__).parent
+
+REPO_DESCRIPTION = (
+    "HeizCore: Vollständige Heizungsregelung (OEG KMS-D-Stil) für KinCony "
+    "KC868-A6/A8 auf ESP-IDF/FreeRTOS. Web-UI mit animiertem Hydraulikschema, "
+    "bis 20 Heizkreise, MQTT+Home-Assistant, Modbus RTU/TCP, OTA."
+)
+
+REPO_TOPICS = [
+    "esp32", "esp-idf", "freertos", "heating-control", "kc868-a8", "kc868-a6",
+    "kincony", "ds18b20", "modbus", "mqtt", "home-assistant", "ota",
+    "littlefs", "pid-controller", "solar-thermal",
+]
+
+# Automatische Dateiermittlung (Build-Artefakte und Verstecktes außen vor)
+EXCLUDE_DIRS  = {"build", "managed_components", ".git", "__pycache__"}
+EXCLUDE_FILES = {"upload_to_github.py", "sdkconfig", "sdkconfig.old", "dependencies.lock"}
+
+def collect_files(base: Path):
+    files = []
+    for p in sorted(base.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(base)
+        if any(part in EXCLUDE_DIRS for part in rel.parts):
+            continue
+        if rel.name in EXCLUDE_FILES:
+            continue
+        if rel.name.startswith(".") and rel.parts[0] != ".github":
+            continue
+        files.append(str(rel).replace(os.sep, "/"))
+    return files
+
+API     = "https://api.github.com"
+TIMEOUT = 20
+RETRIES = 4
+
+def gh(method, path, token, body=None, ok404=False):
+    url  = f"{API}{path}"
+    data = json.dumps(body).encode() if body else None
+    for attempt in range(1, RETRIES + 1):
+        req = Request(url, data=data, method=method)
+        req.add_header("Authorization",        f"Bearer {token}")
+        req.add_header("Accept",               "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        req.add_header("Content-Type",         "application/json")
+        req.add_header("User-Agent",           "heizcore-upload/1.0")
+        try:
+            with urlopen(req, timeout=TIMEOUT) as r:
+                raw = r.read()
+                return json.loads(raw) if raw else {}
+        except HTTPError as e:
+            if e.code == 404 and ok404:
+                return None
+            if e.code in (422, 409):
+                raise RuntimeError(f"HTTP {e.code}: {e.read().decode(errors='replace')}") from e
+            if e.code >= 500 and attempt < RETRIES:
+                wait = 2 ** attempt
+                print(f"   HTTP {e.code} — Retry {attempt} in {wait}s")
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"HTTP {e.code} {method} {path}: {e.read().decode(errors='replace')}") from e
+        except (URLError, socket.timeout, TimeoutError, ConnectionResetError) as e:
+            if attempt < RETRIES:
+                wait = 2 ** attempt
+                print(f"   Netzwerkfehler — Retry {attempt} in {wait}s")
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"Verbindung fehlgeschlagen: {e}") from e
+    raise RuntimeError(f"Alle Retries fehlgeschlagen: {method} {path}")
+
+
+def create_blob(repo_full, content_b64, token):
+    for attempt in range(1, 6):
+        try:
+            result = gh("POST", f"/repos/{repo_full}/git/blobs", token,
+                        {"content": content_b64, "encoding": "base64"})
+            return result["sha"]
+        except RuntimeError as e:
+            if "empty" in str(e).lower() and attempt < 5:
+                wait = 2 * attempt
+                print(f"      Repo noch nicht bereit — Retry in {wait}s")
+                time.sleep(wait)
+                continue
+            raise
+
+
+def get_branch_heads(repo_full, branch, token):
+    """Liefert (commit_sha, tree_sha) des aktuellen Branch-HEAD, oder (None, None)
+    falls der Branch noch nicht existiert (auch ein frisch angelegtes, leeres Repo
+    liefert hierfuer 409 statt 404)."""
+    try:
+        ref = gh("GET", f"/repos/{repo_full}/git/ref/heads/{branch}", token, ok404=True)
+    except RuntimeError as e:
+        if "HTTP 409" in str(e):
+            return None, None
+        raise
+    if not ref:
+        return None, None
+    commit_sha = ref["object"]["sha"]
+    commit = gh("GET", f"/repos/{repo_full}/git/commits/{commit_sha}", token)
+    return commit_sha, commit["tree"]["sha"]
+
+
+def ensure_repo_initialized(repo_full, token, branch="main"):
+    """Die Git-Data-API (Blobs/Trees) lehnt in einem komplett leeren Repo
+    (kein einziger Commit) mit 409 ab — auch wenn der Branch-Ref-Check das
+    korrekt erkennt. Abhilfe: einmalig eine Datei über die alte Contents-API
+    anlegen, das erzeugt den initialen Commit."""
+    parent_sha, _ = get_branch_heads(repo_full, branch, token)
+    if parent_sha:
+        return False
+    print("   Repo ist komplett leer — initialisiere ersten Commit …")
+    gh("PUT", f"/repos/{repo_full}/contents/.gitkeep", token, {
+        "message": "chore: init repo",
+        "content": base64.b64encode(b"").decode(),
+        "branch": branch,
+    })
+    # GitHub braucht nach dem allerersten Commit in einem Repo ein paar
+    # Sekunden, bis die Git-Data-API (Blobs/Trees) den neuen Zustand sieht.
+    for _ in range(10):
+        time.sleep(1.5)
+        parent_sha, _ = get_branch_heads(repo_full, branch, token)
+        if parent_sha:
+            break
+    return True
+
+
+def commit_all_files(repo_full, base_dir, files, message, token, branch="main"):
+    """Erstellt Blobs für alle Dateien, baut EINEN Tree + EINEN Commit und
+    aktualisiert den Branch-Ref — also genau ein Commit/Push statt einem pro Datei."""
+    did_init = ensure_repo_initialized(repo_full, token, branch)
+    parent_sha, base_tree_sha = get_branch_heads(repo_full, branch, token)
+
+    tree_entries = []
+    if did_init:
+        tree_entries.append({"path": ".gitkeep", "mode": "100644", "type": "blob", "sha": None})
+    ok = fail = 0
+    total = len(files)
+    for i, rel in enumerate(files, 1):
+        local = base_dir / rel
+        try:
+            content_b64 = base64.b64encode(local.read_bytes()).decode()
+            blob_sha = create_blob(repo_full, content_b64, token)
+            tree_entries.append({
+                "path": rel, "mode": "100644", "type": "blob", "sha": blob_sha
+            })
+            print(f"   [{i:02d}/{total}] +  {rel}")
+            ok += 1
+        except RuntimeError as e:
+            print(f"   [{i:02d}/{total}] FEHLER  {rel}: {e}")
+            fail += 1
+
+    tree_body = {"tree": tree_entries}
+    if base_tree_sha:
+        tree_body["base_tree"] = base_tree_sha
+    new_tree = gh("POST", f"/repos/{repo_full}/git/trees", token, tree_body)
+
+    commit_body = {"message": message, "tree": new_tree["sha"]}
+    if parent_sha:
+        commit_body["parents"] = [parent_sha]
+    new_commit = gh("POST", f"/repos/{repo_full}/git/commits", token, commit_body)
+
+    if parent_sha:
+        gh("PATCH", f"/repos/{repo_full}/git/refs/heads/{branch}", token,
+           {"sha": new_commit["sha"], "force": False})
+    else:
+        gh("POST", f"/repos/{repo_full}/git/refs", token,
+           {"ref": f"refs/heads/{branch}", "sha": new_commit["sha"]})
+
+    return ok, fail, new_commit["sha"]
+
+
+def upload(token, user, repo_name, private, base_dir):
+    print("Verbinde …")
+    me    = gh("GET", "/user", token)
+    owner = user if user else me["login"]
+    print(f"Eingeloggt: {me['login']}")
+
+    print(f"\nPrüfe '{owner}/{repo_name}' …")
+    repo = gh("GET", f"/repos/{owner}/{repo_name}", token, ok404=True)
+    if repo:
+        print(f"Existiert: {repo['html_url']}")
+        created = False
+    else:
+        repo = gh("POST", "/user/repos", token, {
+            "name":        repo_name,
+            "description": REPO_DESCRIPTION,
+            "private":     private,
+            "auto_init":   True,
+            "has_issues":  True,
+            "has_wiki":    False,
+        })
+        print(f"Erstellt: {repo['html_url']}")
+        created = True
+        time.sleep(2)
+
+    full_name = repo["full_name"]
+
+    try:
+        gh("PUT", f"/repos/{full_name}/topics", token, {"names": REPO_TOPICS})
+        print(f"{len(REPO_TOPICS)} Topics gesetzt")
+    except RuntimeError:
+        pass
+
+    files = collect_files(base_dir)
+    total = len(files)
+    print(f"\n{total} Dateien … (ein einziger Commit für alle)\n")
+    msg = COMMIT_MSG if created else f"Update: {COMMIT_MSG}"
+
+    ok, fail, commit_sha = commit_all_files(full_name, base_dir, files, msg, token)
+
+    print(f"\n{'=' * 60}")
+    print("Fertig!" if fail == 0 else "Abgeschlossen (mit Fehlern)")
+    print(f"   {ok} Dateien in einem Commit, {fail} Fehler")
+    if ok > 0:
+        print(f"   Commit: {commit_sha}")
+    print(f"   Repo:    {repo['html_url']}")
+    print(f"   Actions: {repo['html_url']}/actions")
+    if ok > 0:
+        print("\n   Release-Tag setzen (löst Release-Build aus):")
+        print("   git tag v1.0.0 && git push origin v1.0.0")
+    print('=' * 60)
+
+
+def main():
+    if not GITHUB_TOKEN:
+        print("Token fehlt — export GITHUB_TOKEN=github_pat_...")
+        sys.exit(1)
+    print(f"Projekt: {PROJECT_DIR}")
+    print(f"Ziel:    {GITHUB_USER}/{REPO_NAME}\n")
+    try:
+        upload(GITHUB_TOKEN, GITHUB_USER, REPO_NAME, REPO_PRIVATE, PROJECT_DIR)
+    except RuntimeError as e:
+        print(f"\nFEHLER: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nAbgebrochen.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
